@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to create GitHub Releases
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ── Build Alpine arm64 image ─────────────────────────────────────────────
       - name: Build Alpine arm64 Docker image
         run: |
           docker buildx build \
@@ -33,56 +32,54 @@ jobs:
             -f Dockerfile \
             .
 
-      # ── Create raw ext4 disk image from container ────────────────────────────
       - name: Create disk image
         run: |
           set -euo pipefail
 
-          # 8 GB sparse disk image
           truncate -s 8G immich-vm.img
           mkfs.ext4 -F -L "alpine-root" immich-vm.img
 
-          # Mount
           sudo mkdir -p /mnt/vmroot
           sudo mount -o loop immich-vm.img /mnt/vmroot
 
-          # Export Docker container filesystem
           docker create --platform linux/arm64 --name rootfs alpine-immich-base:latest
           docker export rootfs | sudo tar -C /mnt/vmroot \
             --exclude='./dev/*' --exclude='./proc/*' \
             --exclude='./sys/*'  --exclude='./tmp/*' \
             --exclude='./run/*'  -x
-
           docker rm rootfs
 
-          # resolv.conf (Docker bind-mounts it read-only during build, write it here)
           echo "nameserver 192.168.64.1" | sudo tee /mnt/vmroot/etc/resolv.conf > /dev/null
 
-          # Recreate essential virtual dirs
           sudo mkdir -p /mnt/vmroot/{dev,proc,sys,tmp,run}
           sudo chmod 1777 /mnt/vmroot/tmp
 
-          # Pull kernel & initramfs before unmounting
           sudo cp /mnt/vmroot/boot/vmlinuz-virt  vmlinuz-virt-pe
           sudo cp /mnt/vmroot/boot/initramfs-virt installed-initramfs
+          sudo chown "$USER:$USER" vmlinuz-virt-pe installed-initramfs
 
           sudo umount /mnt/vmroot
 
-      # ── Strip PE/EFI wrapper from kernel ─────────────────────────────────────
+      - name: Inspect kernel format
+        run: |
+          echo "=== vmlinuz-virt-pe: first 128 bytes ==="
+          xxd vmlinuz-virt-pe | head -8
+          echo "=== file type ==="
+          file vmlinuz-virt-pe
+          echo "=== size ==="
+          ls -lh vmlinuz-virt-pe installed-initramfs
+
       - name: Strip kernel PE/EFI wrapper
         run: python3 scripts/strip-kernel.py vmlinuz-virt-pe installed-vmlinuz
 
-      # ── Write root-device config ──────────────────────────────────────────────
       - name: Write root-device.txt
         run: echo "/dev/vda" > root-device.txt
 
-      # ── Compress & package ───────────────────────────────────────────────────
       - name: Package archive
         run: |
           set -euo pipefail
 
-          # Compress disk image with fast level (zeros compress extremely well — result ~300 MB)
-          gzip -1 immich-vm.img           # → immich-vm.img.gz
+          gzip -1 immich-vm.img
 
           tar -czf immich-base-arm64.tar.gz \
             immich-vm.img.gz \
@@ -94,7 +91,6 @@ jobs:
           echo "Contents:"
           tar -tzf immich-base-arm64.tar.gz
 
-      # ── Upload artifact (every run) ───────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -102,7 +98,6 @@ jobs:
           path: immich-base-arm64.tar.gz
           retention-days: 30
 
-      # ── Publish GitHub Release (only on tag push) ─────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
