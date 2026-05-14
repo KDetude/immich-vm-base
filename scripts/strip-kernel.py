@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Strip PE/EFI wrapper from Alpine aarch64 vmlinuz to get a raw ARM64 Image.
 
-Alpine 3.21 arm64 ships vmlinuz-virt as a PE/EFI stub containing an *uncompressed*
-ARM64 Image (not gzip-wrapped). We locate it by scanning for the ARM64 Image magic
-(b"ARMd") at relative offset 56 within any 8-byte-aligned block.
+Alpine arm64 vmlinuz-virt uses a "zimg" PE format:
+  offset 0-1 : "MZ"  (DOS/PE magic)
+  offset 4-7 : "zimg" (Alpine zImage marker)
+  offset 8-11: gzip payload offset (little-endian u32)
+  offset 12-15: gzip payload size  (little-endian u32)
+
+Python 3.12 gzip.decompress() fails on trailing data after the first member.
+We use zlib.decompressobj(wbits=47) which stops cleanly at stream end.
 """
-import sys, shutil
+import sys, struct, zlib, shutil
 
 src, dst = sys.argv[1], sys.argv[2]
 
@@ -20,47 +25,53 @@ if data[56:60] == ARM64_MAGIC:
     shutil.copy(src, dst)
     sys.exit(0)
 
-# Case 2: PE/EFI wrapper containing a raw (uncompressed) ARM64 Image.
-# Find the Image by locating ARM64 magic at relative offset +56 from any
-# 8-byte-aligned position; validate via the image_size header field.
-print("Scanning for embedded ARM64 Image magic…")
-offset = -1
-search_limit = min(len(data) - 64, 32 * 1024 * 1024)
-for i in range(0, search_limit, 8):
-    if data[i + 56: i + 60] == ARM64_MAGIC:
-        img_size = int.from_bytes(data[i + 16: i + 24], "little")
-        if 1 * 1024 * 1024 <= img_size <= 256 * 1024 * 1024:
-            if i + img_size <= len(data):
-                offset = i
-                print(f"ARM64 Image found at offset {offset:#x} ({img_size // 1024 // 1024} MB)")
-                break
+# Case 2: Alpine "zimg" PE wrapper
+# Header: MZ + "zimg" + gzip_offset (u32 LE) + gzip_size (u32 LE)
+if data[4:8] == b"zimg":
+    gzip_off  = struct.unpack_from("<I", data,  8)[0]
+    gzip_size = struct.unpack_from("<I", data, 12)[0]
+    print(f"zimg PE wrapper: gzip payload at {gzip_off:#x} ({gzip_size // 1024} KB)")
 
-# Relaxed fallback: accept any position with the magic (no size check)
-if offset == -1:
-    for i in range(0, search_limit, 8):
-        if data[i + 56: i + 60] == ARM64_MAGIC:
+    payload = data[gzip_off : gzip_off + gzip_size] if gzip_size else data[gzip_off:]
+
+    # zlib.decompressobj stops at end of first gzip member — no trailing-data error
+    try:
+        d = zlib.decompressobj(wbits=47)   # 47 = 15+32 = gzip auto-detect
+        raw = d.decompress(payload, 512 * 1024 * 1024)
+    except zlib.error as e:
+        print(f"ERROR: zlib decompress failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if raw[56:60] != ARM64_MAGIC:
+        print(f"ERROR: decompressed kernel missing ARM64 magic ({raw[56:60].hex()})",
+              file=sys.stderr)
+        sys.exit(1)
+
+    with open(dst, "wb") as f:
+        f.write(raw)
+    print(f"Extracted {len(raw):,} bytes raw ARM64 kernel -> {dst}")
+    sys.exit(0)
+
+# Case 3: raw ARM64 Image embedded in PE — scan for magic at relative offset 56
+print("Scanning for embedded ARM64 Image magic...")
+offset = -1
+for i in range(0, min(len(data) - 64, 32 * 1024 * 1024), 8):
+    if data[i + 56 : i + 60] == ARM64_MAGIC:
+        img_sz = int.from_bytes(data[i + 16 : i + 24], "little")
+        if 1 * 1024 * 1024 <= img_sz <= 256 * 1024 * 1024 <= len(data) - i:
             offset = i
-            print(f"ARM64 Image found (relaxed) at offset {offset:#x}")
+            print(f"ARM64 Image found at offset {offset:#x} ({img_sz // 1024 // 1024} MB)")
             break
 
-if offset == -1:
-    # VZLinuxBootLoader on Apple Silicon can sometimes boot PE kernels directly;
-    # copy as-is and let it try rather than hard-failing the CI.
-    print("WARNING: ARM64 magic not found — copying PE kernel as-is", file=sys.stderr)
-    shutil.copy(src, dst)
+if offset >= 0:
+    img_sz = int.from_bytes(data[offset + 16 : offset + 24], "little")
+    raw = data[offset : offset + img_sz]
+    with open(dst, "wb") as f:
+        f.write(raw)
+    print(f"Written {len(raw):,} bytes -> {dst}")
     sys.exit(0)
 
-img_size = int.from_bytes(data[offset + 16: offset + 24], "little")
-if 1 * 1024 * 1024 <= img_size <= 256 * 1024 * 1024 and offset + img_size <= len(data):
-    raw = data[offset: offset + img_size]
-else:
-    raw = data[offset:]
-
-if raw[56:60] != ARM64_MAGIC:
-    print("Extracted block missing ARM64 magic — copying PE kernel as-is", file=sys.stderr)
-    shutil.copy(src, dst)
-    sys.exit(0)
-
-with open(dst, "wb") as f:
-    f.write(raw)
-print(f"Written {len(raw):,} bytes raw ARM64 kernel → {dst}")
+# Fallback: copy PE as-is (VZLinuxBootLoader on Apple Silicon accepts PE kernels)
+print("WARNING: falling back to PE kernel as-is", file=sys.stderr)
+shutil.copy(src, dst)
+sys.exit(0)
