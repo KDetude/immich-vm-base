@@ -67,7 +67,7 @@ jobs:
 
       # ── Strip PE/EFI wrapper from kernel ─────────────────────────────────────
       - name: Strip kernel PE/EFI wrapper
-        run: python3 .github/scripts/strip-kernel.py vmlinuz-virt-pe installed-vmlinuz
+        run: python3 scripts/strip-kernel.py vmlinuz-virt-pe installed-vmlinuz
 
       # ── Write root-device config ──────────────────────────────────────────────
       - name: Write root-device.txt
@@ -78,8 +78,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Compress disk image (zeros compress extremely well — result ~300 MB)
-          gzip -9 immich-vm.img           # → immich-vm.img.gz
+          # Compress disk image with fast level (zeros compress extremely well — result ~300 MB)
+          gzip -1 immich-vm.img           # → immich-vm.img.gz
 
           tar -czf immich-base-arm64.tar.gz \
             immich-vm.img.gz \
