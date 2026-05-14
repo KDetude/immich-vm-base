@@ -13,8 +13,7 @@ RUN apk update && apk add --no-cache \
 
 # ── Networking — static IP matching VZNATNetworkDeviceAttachment ───────────────
 RUN printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n  address 192.168.64.2\n  netmask 255.255.255.0\n  gateway 192.168.64.1\n' \
-      > /etc/network/interfaces && \
-    printf 'nameserver 192.168.64.1\n' > /etc/resolv.conf
+      > /etc/network/interfaces
 
 # ── Hostname & root password ────────────────────────────────────────────────────
 RUN echo "immich-server" > /etc/hostname && \
