@@ -9,13 +9,7 @@ RUN apk update && apk add --no-cache \
     e2fsprogs \
     util-linux \
     linux-virt \
-    mkinitfs \
     busybox-extras
-
-# ── Initramfs with VirtIO support ──────────────────────────────────────────────
-RUN printf 'features="ata base cdrom ext4 msdos squashfs virtio"\n' \
-      > /etc/mkinitfs/mkinitfs.conf && \
-    mkinitfs $(ls /lib/modules/ | head -1)
 
 # ── Networking — static IP matching VZNATNetworkDeviceAttachment ───────────────
 RUN printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n  address 192.168.64.2\n  netmask 255.255.255.0\n  gateway 192.168.64.1\n' \
