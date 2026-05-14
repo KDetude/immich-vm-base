@@ -55,6 +55,9 @@ jobs:
 
           docker rm rootfs
 
+          # resolv.conf (Docker bind-mounts it read-only during build, write it here)
+          echo "nameserver 192.168.64.1" | sudo tee /mnt/vmroot/etc/resolv.conf > /dev/null
+
           # Recreate essential virtual dirs
           sudo mkdir -p /mnt/vmroot/{dev,proc,sys,tmp,run}
           sudo chmod 1777 /mnt/vmroot/tmp
