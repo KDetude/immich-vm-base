@@ -1,0 +1,17 @@
+#!/bin/sh
+modprobe virtiofs 2>/dev/null || true
+mkdir -p /mnt/library /mnt/meta
+mount -t virtiofs immich-library /mnt/library 2>/dev/null || true
+mount -t virtiofs immich-meta    /mnt/meta    2>/dev/null || true
+
+cd /opt/immich
+docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null || true
+
+sleep 30
+
+IP=$(ip addr show eth0 2>/dev/null | grep 'inet ' | head -1 | awk '{print $2}' | cut -d/ -f1)
+if [ -n "$IP" ]; then
+    echo "$IP" > /mnt/meta/vm-ip.txt
+    printf 'Immich is running on http://%s:2283\n' "$IP" >/dev/console
+fi
+exit 0

@@ -1,0 +1,108 @@
+name: Build VM Base Image
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'vm-image-v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create GitHub Releases
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Build Alpine arm64 image ─────────────────────────────────────────────
+      - name: Build Alpine arm64 Docker image
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -t alpine-immich-base:latest \
+            -f Dockerfile \
+            .
+
+      # ── Create raw ext4 disk image from container ────────────────────────────
+      - name: Create disk image
+        run: |
+          set -euo pipefail
+
+          # 8 GB sparse disk image
+          truncate -s 8G immich-vm.img
+          mkfs.ext4 -F -L "alpine-root" immich-vm.img
+
+          # Mount
+          sudo mkdir -p /mnt/vmroot
+          sudo mount -o loop immich-vm.img /mnt/vmroot
+
+          # Export Docker container filesystem
+          docker create --platform linux/arm64 --name rootfs alpine-immich-base:latest
+          docker export rootfs | sudo tar -C /mnt/vmroot \
+            --exclude='./dev/*' --exclude='./proc/*' \
+            --exclude='./sys/*'  --exclude='./tmp/*' \
+            --exclude='./run/*'  -x
+
+          docker rm rootfs
+
+          # Recreate essential virtual dirs
+          sudo mkdir -p /mnt/vmroot/{dev,proc,sys,tmp,run}
+          sudo chmod 1777 /mnt/vmroot/tmp
+
+          # Pull kernel & initramfs before unmounting
+          sudo cp /mnt/vmroot/boot/vmlinuz-virt  vmlinuz-virt-pe
+          sudo cp /mnt/vmroot/boot/initramfs-virt installed-initramfs
+
+          sudo umount /mnt/vmroot
+
+      # ── Strip PE/EFI wrapper from kernel ─────────────────────────────────────
+      - name: Strip kernel PE/EFI wrapper
+        run: python3 .github/scripts/strip-kernel.py vmlinuz-virt-pe installed-vmlinuz
+
+      # ── Write root-device config ──────────────────────────────────────────────
+      - name: Write root-device.txt
+        run: echo "/dev/vda" > root-device.txt
+
+      # ── Compress & package ───────────────────────────────────────────────────
+      - name: Package archive
+        run: |
+          set -euo pipefail
+
+          # Compress disk image (zeros compress extremely well — result ~300 MB)
+          gzip -9 immich-vm.img           # → immich-vm.img.gz
+
+          tar -czf immich-base-arm64.tar.gz \
+            immich-vm.img.gz \
+            installed-vmlinuz \
+            installed-initramfs \
+            root-device.txt
+
+          echo "Archive: $(du -sh immich-base-arm64.tar.gz | cut -f1)"
+          echo "Contents:"
+          tar -tzf immich-base-arm64.tar.gz
+
+      # ── Upload artifact (every run) ───────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immich-base-arm64
+          path: immich-base-arm64.tar.gz
+          retention-days: 30
+
+      # ── Publish GitHub Release (only on tag push) ─────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: immich-base-arm64.tar.gz
+          generate_release_notes: true
