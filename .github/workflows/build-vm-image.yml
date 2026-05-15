@@ -49,7 +49,12 @@ jobs:
             --exclude='./run/*'  -x
           docker rm rootfs
 
+          # resolv.conf is bind-mounted read-only by Docker during build
           echo "nameserver 192.168.64.1" | sudo tee /mnt/vmroot/etc/resolv.conf > /dev/null
+
+          # Remove Docker marker — prevents OpenRC from booting in [DOCKER] softlevel mode
+          # which skips remounting root rw and breaks Docker startup inside the VM
+          sudo rm -f /mnt/vmroot/.dockerenv
 
           sudo mkdir -p /mnt/vmroot/{dev,proc,sys,tmp,run}
           sudo chmod 1777 /mnt/vmroot/tmp
@@ -59,15 +64,6 @@ jobs:
           sudo chown "$USER:$USER" vmlinuz-virt-pe installed-initramfs
 
           sudo umount /mnt/vmroot
-
-      - name: Inspect kernel format
-        run: |
-          echo "=== vmlinuz-virt-pe: first 128 bytes ==="
-          xxd vmlinuz-virt-pe | head -8
-          echo "=== file type ==="
-          file vmlinuz-virt-pe
-          echo "=== size ==="
-          ls -lh vmlinuz-virt-pe installed-initramfs
 
       - name: Strip kernel PE/EFI wrapper
         run: python3 scripts/strip-kernel.py vmlinuz-virt-pe installed-vmlinuz
