@@ -11,6 +11,10 @@ RUN apk update && apk add --no-cache \
     linux-virt \
     busybox-extras
 
+# ── VirtIO serial console (hvc0) — required for VZLinuxBootLoader/Virtualization.framework
+# Alpine inittab has tty1-6 by default but not hvc0; without this there is no login prompt
+RUN echo 'hvc0::respawn:/sbin/getty -L 0 hvc0 vt100' >> /etc/inittab
+
 # ── Networking — static IP matching VZNATNetworkDeviceAttachment ───────────────
 RUN printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n  address 192.168.64.2\n  netmask 255.255.255.0\n  gateway 192.168.64.1\n' \
       > /etc/network/interfaces
